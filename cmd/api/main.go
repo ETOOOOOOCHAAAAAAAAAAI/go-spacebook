@@ -1,8 +1,6 @@
 package main
 
 import (
-	"SpaceBookProject/middleware"
-	"fmt"
 	"log"
 
 	"SpaceBookProject/internal/auth"
@@ -11,6 +9,7 @@ import (
 	"SpaceBookProject/internal/handlers"
 	"SpaceBookProject/internal/repository"
 	"SpaceBookProject/internal/services"
+	"SpaceBookProject/middleware"
 
 	"github.com/gin-gonic/gin"
 )
@@ -18,58 +17,48 @@ import (
 func main() {
 	cfg, err := config.LoadConfig()
 	if err != nil {
-		log.Fatal("Failed to load config:", err)
+		log.Fatalf("load config: %v", err)
 	}
-
-	database, err := db.InitDB(&cfg.Database)
+	dbConn, err := db.InitDB(&cfg.Database)
 	if err != nil {
-		log.Fatal("Failed to initialize database:", err)
+		log.Fatalf("init db: %v", err)
 	}
-	defer database.Close()
-
-	userRepo := repository.NewUserRepository(database)
-
 	jwtManager := auth.NewJWTManager(cfg.JWT.SecretKey)
-
+	userRepo := repository.NewUserRepository(dbConn)
+	spaceRepo := repository.NewSpaceRepository(dbConn)
 	authService := services.NewAuthService(userRepo, jwtManager)
-
+	spaceService := services.NewSpaceService(spaceRepo)
 	authHandler := handlers.NewAuthHandler(authService)
+	spaceHandler := handlers.NewSpaceHandler(spaceService)
+	if cfg.Server.Mode != "" {
+		gin.SetMode(cfg.Server.Mode)
+	}
+	r := gin.Default()
+	r.Use(middleware.CORSMiddleware())
 
-	gin.SetMode(cfg.Server.Mode)
-	router := gin.Default()
-
-	router.Use(middleware.CORSMiddleware())
-
-	api := router.Group(cfg.API.Prefix + "/" + cfg.API.Version)
+	api := r.Group(cfg.API.Prefix)
+	v1 := api.Group("/" + cfg.API.Version)
+	authGroup := v1.Group("/auth")
 	{
-		authRoutes := api.Group("/auth")
+		authGroup.POST("/register", authHandler.Register)
+		authGroup.POST("/login", authHandler.Login)
+		authGroup.POST("/refresh", authHandler.RefreshToken)
+		authGroup.POST("/logout", authHandler.Logout)
+	}
+	protected := v1.Group("")
+	protected.Use(middleware.AuthMiddleware(jwtManager))
+	{
+		protected.GET("/auth/me", authHandler.GetMe)
+		protected.GET("/spaces", spaceHandler.ListSpaces)
+		owner := protected.Group("/owner")
+		owner.Use(middleware.OwnerOnlyMiddleware())
 		{
-			authRoutes.POST("/register", authHandler.Register)
-			authRoutes.POST("/login", authHandler.Login)
-			authRoutes.POST("/refresh", authHandler.RefreshToken)
-		}
-
-		protected := api.Group("")
-		protected.Use(middleware.AuthMiddleware(jwtManager))
-		{
-			protected.GET("/auth/me", authHandler.GetMe)
-			protected.POST("/auth/logout", authHandler.Logout)
+			owner.POST("/spaces", spaceHandler.CreateSpace)
+			owner.GET("/spaces", spaceHandler.ListMySpaces)
 		}
 	}
 
-	router.GET("/health", func(c *gin.Context) {
-		c.JSON(200, gin.H{
-			"status":  "ok",
-			"service": "SpaceBook API",
-			"version": cfg.API.Version,
-		})
-	})
-
-	addr := fmt.Sprintf(":%s", cfg.Server.Port)
-	fmt.Printf("Server starting on %s\n", addr)
-	fmt.Printf("API endpoints available at %s/%s\n", cfg.API.Prefix, cfg.API.Version)
-
-	if err := router.Run(addr); err != nil {
-		log.Fatal("Failed to start server:", err)
+	if err := r.Run(":" + cfg.Server.Port); err != nil {
+		log.Fatalf("server run: %v", err)
 	}
 }
