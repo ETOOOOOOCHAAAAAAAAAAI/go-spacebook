@@ -40,22 +40,16 @@ func (r *BookingRepository) Create(b *domain.Booking) error {
 }
 
 func (r *BookingRepository) GetByID(id int) (*domain.Booking, error) {
-	const query = `
-		SELECT id, space_id, tenant_id, status, date_from, date_to, created_at, updated_at
-		FROM bookings
-		WHERE id = $1;
-	`
+	const q = `
+        SELECT id, space_id, tenant_id, date_from, date_to, status, created_at, updated_at
+        FROM bookings
+        WHERE id = $1`
 
 	b := &domain.Booking{}
-	err := r.db.QueryRow(query, id).Scan(
-		&b.ID,
-		&b.SpaceID,
-		&b.TenantID,
-		&b.Status,
-		&b.DateFrom,
-		&b.DateTo,
-		&b.CreatedAt,
-		&b.UpdatedAt,
+	err := r.db.QueryRow(q, id).Scan(
+		&b.ID, &b.SpaceID, &b.TenantID,
+		&b.DateFrom, &b.DateTo, &b.Status,
+		&b.CreatedAt, &b.UpdatedAt,
 	)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -63,19 +57,17 @@ func (r *BookingRepository) GetByID(id int) (*domain.Booking, error) {
 		}
 		return nil, err
 	}
-
 	return b, nil
 }
 
 func (r *BookingRepository) ListByTenant(tenantID int) ([]domain.Booking, error) {
-	const query = `
-		SELECT id, space_id, tenant_id, status, date_from, date_to, created_at, updated_at
-		FROM bookings
-		WHERE tenant_id = $1
-		ORDER BY created_at DESC;
-	`
+	const q = `
+        SELECT id, space_id, tenant_id, date_from, date_to, status, created_at, updated_at
+        FROM bookings
+        WHERE tenant_id = $1
+        ORDER BY date_from DESC, id DESC`
 
-	rows, err := r.db.Query(query, tenantID)
+	rows, err := r.db.Query(q, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -85,32 +77,27 @@ func (r *BookingRepository) ListByTenant(tenantID int) ([]domain.Booking, error)
 	for rows.Next() {
 		var b domain.Booking
 		if err := rows.Scan(
-			&b.ID,
-			&b.SpaceID,
-			&b.TenantID,
-			&b.Status,
-			&b.DateFrom,
-			&b.DateTo,
-			&b.CreatedAt,
-			&b.UpdatedAt,
+			&b.ID, &b.SpaceID, &b.TenantID,
+			&b.DateFrom, &b.DateTo, &b.Status,
+			&b.CreatedAt, &b.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
 		res = append(res, b)
 	}
-	return res, nil
+	return res, rows.Err()
 }
 
 func (r *BookingRepository) ListByOwner(ownerID int) ([]domain.Booking, error) {
-	const query = `
-		SELECT b.id, b.space_id, b.tenant_id, b.status, b.date_from, b.date_to, b.created_at, b.updated_at
-		FROM bookings b
-		JOIN spaces s ON b.space_id = s.id
-		WHERE s.owner_id = $1
-		ORDER BY b.created_at DESC;
-	`
+	const q = `
+        SELECT b.id, b.space_id, b.tenant_id, b.date_from, b.date_to,
+               b.status, b.created_at, b.updated_at
+        FROM bookings b
+        JOIN spaces s ON s.id = b.space_id
+        WHERE s.owner_id = $1
+        ORDER BY b.date_from DESC, b.id DESC`
 
-	rows, err := r.db.Query(query, ownerID)
+	rows, err := r.db.Query(q, ownerID)
 	if err != nil {
 		return nil, err
 	}
@@ -120,57 +107,64 @@ func (r *BookingRepository) ListByOwner(ownerID int) ([]domain.Booking, error) {
 	for rows.Next() {
 		var b domain.Booking
 		if err := rows.Scan(
-			&b.ID,
-			&b.SpaceID,
-			&b.TenantID,
-			&b.Status,
-			&b.DateFrom,
-			&b.DateTo,
-			&b.CreatedAt,
-			&b.UpdatedAt,
+			&b.ID, &b.SpaceID, &b.TenantID,
+			&b.DateFrom, &b.DateTo, &b.Status,
+			&b.CreatedAt, &b.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
 		res = append(res, b)
 	}
-	return res, nil
+	return res, rows.Err()
 }
 
 func (r *BookingRepository) UpdateStatus(id int, status domain.BookingStatus) error {
-	const query = `
-		UPDATE bookings
-		SET status = $1, updated_at = NOW()
-		WHERE id = $2;
-	`
+	const q = `
+        UPDATE bookings
+        SET status = $1, updated_at = NOW()
+        WHERE id = $2`
 
-	result, err := r.db.Exec(query, status, id)
+	res, err := r.db.Exec(q, status, id)
 	if err != nil {
 		return err
 	}
-	affected, err := result.RowsAffected()
+	n, err := res.RowsAffected()
 	if err != nil {
 		return err
 	}
-	if affected == 0 {
+	if n == 0 {
 		return ErrBookingNotFound
 	}
 	return nil
 }
 
-func (r *BookingRepository) ExistsOverlapApproved(spaceID int, from, to time.Time) (bool, error) {
-	const query = `
-		SELECT COUNT(1)
-		FROM bookings
-		WHERE space_id = $1
-		  AND status = 'approved'
-		  AND NOT ($3 <= date_from OR $2 >= date_to);
-		-- intervals overlap if NOT (new_to <= from OR new_from >= to)
-	`
+func (r *BookingRepository) HasApprovedOverlap(
+	spaceID int,
+	from, to time.Time,
+	excludeID *int,
+) (bool, error) {
+	query := `
+        SELECT EXISTS (
+            SELECT 1
+            FROM bookings
+            WHERE space_id = $1
+              AND status = 'approved'
+              -- нет пересечения = (date_to <= from) OR (date_from >= to)
+              -- нам нужны ИМЕННО пересекающиеся, поэтому NOT (...)
+              AND NOT (date_to <= $2 OR date_from >= $3)
+    `
+	args := []any{spaceID, from, to}
 
-	var count int
-	err := r.db.QueryRow(query, spaceID, from, to).Scan(&count)
-	if err != nil {
+	if excludeID != nil {
+		query += " AND id <> $4"
+		args = append(args, *excludeID)
+	}
+
+	query += ")"
+
+	var exists bool
+	if err := r.db.QueryRow(query, args...).Scan(&exists); err != nil {
 		return false, err
 	}
-	return count > 0, nil
+	return exists, nil
 }

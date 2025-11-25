@@ -2,10 +2,13 @@ package repository
 
 import (
 	"database/sql"
+	"errors"
 	"time"
 
 	"SpaceBookProject/internal/domain"
 )
+
+var ErrSpaceNotFound = errors.New("space not found")
 
 type SpaceRepository struct {
 	db *sql.DB
@@ -13,6 +16,34 @@ type SpaceRepository struct {
 
 func NewSpaceRepository(db *sql.DB) *SpaceRepository {
 	return &SpaceRepository{db: db}
+}
+
+func (r *SpaceRepository) GetByID(id int) (*domain.Space, error) {
+	const query = `
+        SELECT id, owner_id, title, description, area_m2, price, phone, created_at, updated_at
+        FROM spaces
+        WHERE id = $1
+    `
+
+	s := &domain.Space{}
+	err := r.db.QueryRow(query, id).Scan(
+		&s.ID,
+		&s.OwnerID,
+		&s.Title,
+		&s.Description,
+		&s.AreaM2,
+		&s.Price,
+		&s.Phone,
+		&s.CreatedAt,
+		&s.UpdatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, ErrSpaceNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 
 func (r *SpaceRepository) List() ([]domain.Space, error) {

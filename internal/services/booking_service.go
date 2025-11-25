@@ -9,16 +9,22 @@ import (
 )
 
 var (
-	ErrForbiddenAction      = errors.New("forbidden action")
-	ErrInvalidBookingStatus = errors.New("invalid booking status for this operation")
+	ErrForbidden          = errors.New("forbidden")
+	ErrAlreadyStarted     = errors.New("booking already started")
+	ErrWrongStatus        = errors.New("invalid booking status")
+	ErrOverlappingBooking = errors.New("overlapping approved booking")
 )
 
 type BookingService struct {
 	bookings *repository.BookingRepository
+	spaces   *repository.SpaceRepository
 }
 
-func NewBookingService(bookings *repository.BookingRepository) *BookingService {
-	return &BookingService{bookings: bookings}
+func NewBookingService(bookings *repository.BookingRepository, spaces *repository.SpaceRepository) *BookingService {
+	return &BookingService{
+		bookings: bookings,
+		spaces:   spaces,
+	}
 }
 
 const dateLayout = "2006-01-02"
@@ -36,8 +42,7 @@ func (s *BookingService) CreateBooking(tenantID int, req *domain.CreateBookingRe
 		return nil, errors.New("date_from must be before date_to")
 	}
 
-	// Optional: check overlaps only for already approved bookings.
-	hasOverlap, err := s.bookings.ExistsOverlapApproved(req.SpaceID, from, to)
+	hasOverlap, err := s.bookings.HasApprovedOverlap(req.SpaceID, from, to, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -67,83 +72,73 @@ func (s *BookingService) ListOwnerBookings(ownerID int) ([]domain.Booking, error
 	return s.bookings.ListByOwner(ownerID)
 }
 
-func (s *BookingService) CancelBooking(tenantID, bookingID int) error {
-	b, err := s.bookings.GetByID(bookingID)
+func (s *BookingService) CancelBooking(id, tenantID int) error {
+	b, err := s.bookings.GetByID(id)
 	if err != nil {
 		return err
 	}
 
 	if b.TenantID != tenantID {
-		return ErrForbiddenAction
+		return ErrForbidden
 	}
-
+	if time.Now().After(b.DateFrom) {
+		return ErrAlreadyStarted
+	}
 	if b.Status != domain.BookingStatusPending && b.Status != domain.BookingStatusApproved {
-		return ErrInvalidBookingStatus
+		return ErrWrongStatus
 	}
 
-	return s.bookings.UpdateStatus(bookingID, domain.BookingStatusCancelled)
+	return s.bookings.UpdateStatus(id, domain.BookingStatusCancelled)
 }
 
-func (s *BookingService) ApproveBooking(ownerID, bookingID int) error {
-	b, err := s.bookings.GetByID(bookingID)
+func (s *BookingService) ApproveBooking(id int, ownerID int) error {
+	b, err := s.bookings.GetByID(id)
 	if err != nil {
 		return err
 	}
 
-	ownerBookings, err := s.bookings.ListByOwner(ownerID)
+	sp, err := s.spaces.GetByID(b.SpaceID)
 	if err != nil {
 		return err
 	}
-	isOwner := false
-	for _, ob := range ownerBookings {
-		if ob.ID == b.ID {
-			isOwner = true
-			break
-		}
-	}
-	if !isOwner {
-		return ErrForbiddenAction
+
+	if sp.OwnerID != ownerID {
+		return ErrForbidden
 	}
 
 	if b.Status != domain.BookingStatusPending {
-		return ErrInvalidBookingStatus
+		return ErrWrongStatus
 	}
 
-	hasOverlap, err := s.bookings.ExistsOverlapApproved(b.SpaceID, b.DateFrom, b.DateTo)
+	overlap, err := s.bookings.HasApprovedOverlap(b.SpaceID, b.DateFrom, b.DateTo, &b.ID)
 	if err != nil {
 		return err
 	}
-	if hasOverlap {
-		return errors.New("space is already approved for these dates")
+	if overlap {
+		return ErrOverlappingBooking
 	}
 
-	return s.bookings.UpdateStatus(bookingID, domain.BookingStatusApproved)
+	return s.bookings.UpdateStatus(id, domain.BookingStatusApproved)
 }
 
-func (s *BookingService) RejectBooking(ownerID, bookingID int) error {
-	b, err := s.bookings.GetByID(bookingID)
+func (s *BookingService) RejectBooking(id int, ownerID int) error {
+	b, err := s.bookings.GetByID(id)
 	if err != nil {
 		return err
 	}
 
-	ownerBookings, err := s.bookings.ListByOwner(ownerID)
+	sp, err := s.spaces.GetByID(b.SpaceID)
 	if err != nil {
 		return err
 	}
-	isOwner := false
-	for _, ob := range ownerBookings {
-		if ob.ID == b.ID {
-			isOwner = true
-			break
-		}
-	}
-	if !isOwner {
-		return ErrForbiddenAction
+
+	if sp.OwnerID != ownerID {
+		return ErrForbidden
 	}
 
 	if b.Status != domain.BookingStatusPending {
-		return ErrInvalidBookingStatus
+		return ErrWrongStatus
 	}
 
-	return s.bookings.UpdateStatus(bookingID, domain.BookingStatusRejected)
+	return s.bookings.UpdateStatus(id, domain.BookingStatusRejected)
 }
