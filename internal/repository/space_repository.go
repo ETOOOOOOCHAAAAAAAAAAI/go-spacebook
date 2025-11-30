@@ -3,10 +3,20 @@ package repository
 import (
 	"database/sql"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"SpaceBookProject/internal/domain"
 )
+
+type SpaceFilter struct {
+	Query    *string
+	MinPrice *int
+	MaxPrice *int
+	MinArea  *float64
+	MaxArea  *float64
+}
 
 var ErrSpaceNotFound = errors.New("space not found")
 
@@ -46,12 +56,51 @@ func (r *SpaceRepository) GetByID(id int) (*domain.Space, error) {
 	return s, nil
 }
 
-func (r *SpaceRepository) List() ([]domain.Space, error) {
-	rows, err := r.db.Query(`
+func (r *SpaceRepository) ListFiltered(f SpaceFilter) ([]domain.Space, error) {
+	query := `
 		SELECT id, owner_id, title, description, area_m2, price, phone, created_at, updated_at
 		FROM spaces
-		ORDER BY created_at DESC`,
+	`
+	var (
+		conds []string
+		args  []any
+		i     = 1
 	)
+
+	if f.Query != nil && *f.Query != "" {
+		conds = append(conds, fmt.Sprintf("(title ILIKE $%d OR description ILIKE $%d)", i, i+1))
+		pattern := "%" + *f.Query + "%"
+		args = append(args, pattern, pattern)
+		i += 2
+	}
+	if f.MinPrice != nil {
+		conds = append(conds, fmt.Sprintf("price >= $%d", i))
+		args = append(args, *f.MinPrice)
+		i++
+	}
+	if f.MaxPrice != nil {
+		conds = append(conds, fmt.Sprintf("price <= $%d", i))
+		args = append(args, *f.MaxPrice)
+		i++
+	}
+	if f.MinArea != nil {
+		conds = append(conds, fmt.Sprintf("area_m2 >= $%d", i))
+		args = append(args, *f.MinArea)
+		i++
+	}
+	if f.MaxArea != nil {
+		conds = append(conds, fmt.Sprintf("area_m2 <= $%d", i))
+		args = append(args, *f.MaxArea)
+		i++
+	}
+
+	if len(conds) > 0 {
+		query += " WHERE " + strings.Join(conds, " AND ")
+	}
+
+	query += " ORDER BY created_at DESC, id DESC"
+
+	rows, err := r.db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -75,7 +124,6 @@ func (r *SpaceRepository) List() ([]domain.Space, error) {
 		}
 		result = append(result, s)
 	}
-
 	return result, rows.Err()
 }
 

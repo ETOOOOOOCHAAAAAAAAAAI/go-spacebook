@@ -13,8 +13,8 @@ func NewSpaceService(repo *repository.SpaceRepository) *SpaceService {
 	return &SpaceService{repo: repo}
 }
 
-func (s *SpaceService) ListSpaces() ([]domain.Space, error) {
-	return s.repo.List()
+func (s *SpaceService) ListSpaces(f repository.SpaceFilter) ([]domain.Space, error) {
+	return s.repo.ListFiltered(f)
 }
 
 func (s *SpaceService) CreateSpace(ownerID int, req *domain.CreateSpaceRequest) (*domain.Space, error) {

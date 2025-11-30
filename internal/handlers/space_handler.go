@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"SpaceBookProject/internal/repository"
 	"net/http"
+	"strconv"
 
 	"SpaceBookProject/internal/domain"
 	"SpaceBookProject/internal/services"
@@ -18,7 +20,39 @@ func NewSpaceHandler(svc *services.SpaceService) *SpaceHandler {
 }
 
 func (h *SpaceHandler) ListSpaces(c *gin.Context) {
-	spaces, err := h.svc.ListSpaces()
+	q := c.Query("q")
+	minPriceStr := c.Query("min_price")
+	maxPriceStr := c.Query("max_price")
+	minAreaStr := c.Query("min_area")
+	maxAreaStr := c.Query("max_area")
+
+	var f repository.SpaceFilter
+
+	if q != "" {
+		f.Query = &q
+	}
+	if minPriceStr != "" {
+		if v, err := strconv.Atoi(minPriceStr); err == nil {
+			f.MinPrice = &v
+		}
+	}
+	if maxPriceStr != "" {
+		if v, err := strconv.Atoi(maxPriceStr); err == nil {
+			f.MaxPrice = &v
+		}
+	}
+	if minAreaStr != "" {
+		if v, err := strconv.ParseFloat(minAreaStr, 64); err == nil {
+			f.MinArea = &v
+		}
+	}
+	if maxAreaStr != "" {
+		if v, err := strconv.ParseFloat(maxAreaStr, 64); err == nil {
+			f.MaxArea = &v
+		}
+	}
+
+	spaces, err := h.svc.ListSpaces(f)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load spaces"})
 		return
