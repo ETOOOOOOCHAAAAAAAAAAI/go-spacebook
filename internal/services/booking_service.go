@@ -3,9 +3,13 @@ package services
 import (
 	"errors"
 	"time"
-
 	"SpaceBookProject/internal/domain"
-	"SpaceBookProject/internal/repository"
+
+	// ругается, что не используется, импорт репозитория
+	// "SpaceBookProject/internal/repository"
+	//для новой версии не нужен этот импорт, переписал интерфейсы ниже
+
+
 )
 
 var (
@@ -15,19 +19,39 @@ var (
 	ErrOverlappingBooking = errors.New("overlapping approved booking")
 )
 
+type BookingRepo interface {
+	Create(*domain.Booking) error
+	GetByID(int) (*domain.Booking, error)
+	ListByTenant(int) ([]domain.Booking, error)
+	ListByOwner(int) ([]domain.Booking, error)
+	UpdateStatus(int, domain.BookingStatus) error
+	HasApprovedOverlap(int, time.Time, time.Time, *int) (bool, error)
+}
+
+type SpaceRepo interface {
+	GetByID(int) (*domain.Space, error)
+}
+
+
 type BookingService struct {
-	bookings *repository.BookingRepository
-	spaces   *repository.SpaceRepository
+	bookings BookingRepo
+	spaces   SpaceRepo
 	events   chan<- domain.BookingEvent
 }
 
-func NewBookingService(bookings *repository.BookingRepository, spaces *repository.SpaceRepository, events chan<- domain.BookingEvent) *BookingService {
+
+func NewBookingService(
+	bookings BookingRepo,
+	spaces SpaceRepo,
+	events chan<- domain.BookingEvent,
+) *BookingService {
 	return &BookingService{
 		bookings: bookings,
 		spaces:   spaces,
 		events:   events,
 	}
 }
+
 
 const dateLayout = "2006-01-02"
 
