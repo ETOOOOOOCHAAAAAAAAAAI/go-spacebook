@@ -54,7 +54,6 @@ func (f *fakeSpaceRepo) GetByID(int) (*domain.Space, error) {
 
 
 
-
 //1 FIRST TESTING CREATE BOOKING
 // 1. Создание бронирования при валидных датах и отсутствии конфликтов
 func TestCreateBooking_OK(t *testing.T) {

@@ -40,14 +40,18 @@ func main() {
 	bookingRepo := repository.NewBookingRepository(database)
 	spaceRepo := repository.NewSpaceRepository(database)
 	eventsChan := make(chan domain.BookingEvent, 100)
+	notificationRepo := repository.NewNotificationRepository(database)
+
 
 	authService := services.NewAuthService(userRepo, jwtManager)
 	bookingService := services.NewBookingService(bookingRepo, spaceRepo, eventsChan)
 	spaceService := services.NewSpaceService(spaceRepo)
+	notificationService := services.NewNotificationService(notificationRepo)
 
 	authHandler := handlers.NewAuthHandler(authService)
 	bookingHandler := handlers.NewBookingHandler(bookingService)
 	spaceHandler := handlers.NewSpaceHandler(spaceService)
+	notificationHandler := handlers.NewNotificationHandler(notificationService)
 
 	gin.SetMode(cfg.Server.Mode)
 	r := gin.New()
@@ -89,6 +93,15 @@ func main() {
 		ownerBookings.PATCH("/:id/reject", bookingHandler.RejectBooking)
 	}
 
+	notificationsGroup := api.Group(
+	"/notifications",
+	middleware.AuthMiddleware(jwtManager),
+)
+{
+	notificationsGroup.GET("", notificationHandler.List)
+}
+
+
 	srv := &http.Server{
 		Addr:    ":" + cfg.Server.Port,
 		Handler: r,
@@ -98,7 +111,7 @@ func main() {
 		os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	bookingWorker := worker.NewBookingEventWorker(eventsChan)
+	bookingWorker := worker.NewBookingEventWorker(eventsChan, notificationService)
 	go bookingWorker.Run(ctx)
 
 	go func() {
