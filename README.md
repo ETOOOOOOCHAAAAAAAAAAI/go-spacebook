@@ -2,8 +2,6 @@
 
 Backend-only booking platform written in Go (Gin) with PostgreSQL and Docker.
 
-This README shows how to run the project on **macOS** as simply as possible.
-
 ---
 
 ## 1. Prerequisites (macOS)
