@@ -18,13 +18,20 @@ var (
 type BookingService struct {
 	bookings *repository.BookingRepository
 	spaces   *repository.SpaceRepository
+	history  *repository.BookingHistoryRepository
 	events   chan<- domain.BookingEvent
 }
 
-func NewBookingService(bookings *repository.BookingRepository, spaces *repository.SpaceRepository, events chan<- domain.BookingEvent) *BookingService {
+func NewBookingService(
+	bookings *repository.BookingRepository,
+	spaces *repository.SpaceRepository,
+	history *repository.BookingHistoryRepository,
+	events chan<- domain.BookingEvent,
+) *BookingService {
 	return &BookingService{
 		bookings: bookings,
 		spaces:   spaces,
+		history:  history,
 		events:   events,
 	}
 }
@@ -100,9 +107,19 @@ func (s *BookingService) CancelBooking(id, tenantID int) error {
 		return ErrWrongStatus
 	}
 
+	old := string(b.Status)
+	newStatus := string(domain.BookingStatusCancelled)
+
 	if err := s.bookings.UpdateStatus(id, domain.BookingStatusCancelled); err != nil {
 		return err
 	}
+
+	if s.history != nil {
+		if err := s.history.Add(id, &old, newStatus, tenantID); err != nil {
+			return err
+		}
+	}
+
 	if s.events != nil {
 		s.events <- domain.BookingEvent{
 			Type:      domain.BookingEventCancelled,
@@ -143,9 +160,19 @@ func (s *BookingService) ApproveBooking(id int, ownerID int) error {
 		return ErrOverlappingBooking
 	}
 
+	old := string(b.Status)
+	newStatus := string(domain.BookingStatusApproved)
+
 	if err := s.bookings.UpdateStatus(id, domain.BookingStatusApproved); err != nil {
 		return err
 	}
+
+	if s.history != nil {
+		if err := s.history.Add(id, &old, newStatus, ownerID); err != nil {
+			return err
+		}
+	}
+
 	if s.events != nil {
 		s.events <- domain.BookingEvent{
 			Type:      domain.BookingEventApproved,
@@ -178,9 +205,19 @@ func (s *BookingService) RejectBooking(id int, ownerID int) error {
 		return ErrWrongStatus
 	}
 
+	old := string(b.Status)
+	newStatus := string(domain.BookingStatusRejected)
+
 	if err := s.bookings.UpdateStatus(id, domain.BookingStatusRejected); err != nil {
 		return err
 	}
+
+	if s.history != nil {
+		if err := s.history.Add(id, &old, newStatus, ownerID); err != nil {
+			return err
+		}
+	}
+
 	if s.events != nil {
 		s.events <- domain.BookingEvent{
 			Type:      domain.BookingEventRejected,
@@ -190,6 +227,30 @@ func (s *BookingService) RejectBooking(id int, ownerID int) error {
 			At:        time.Now(),
 		}
 	}
-
 	return nil
+}
+
+// BookingHistory returns booking status history if requester has access
+func (s *BookingService) BookingHistory(
+	bookingID int,
+	requesterID int,
+) ([]domain.BookingStatusHistory, error) {
+
+	// 1. Получаем бронь
+	b, err := s.bookings.GetByID(bookingID)
+	if err != nil {
+		return nil, err
+	}
+
+	// 2. Получаем пространство
+	sp, err := s.spaces.GetByID(b.SpaceID)
+	if err != nil {
+		return nil, err
+	}
+
+	if b.TenantID != requesterID && sp.OwnerID != requesterID {
+		return nil, ErrForbidden
+	}
+
+	return s.history.List(bookingID)
 }

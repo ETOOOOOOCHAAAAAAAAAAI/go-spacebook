@@ -40,16 +40,19 @@ func main() {
 	bookingRepo := repository.NewBookingRepository(database)
 	spaceRepo := repository.NewSpaceRepository(database)
 	favoritesRepo := repository.NewFavoritesRepository(database)
+	historyRepo := repository.NewBookingHistoryRepository(database)
+
 	eventsChan := make(chan domain.BookingEvent, 100)
 
 	authService := services.NewAuthService(userRepo, jwtManager)
-	bookingService := services.NewBookingService(bookingRepo, spaceRepo, eventsChan)
+	bookingService := services.NewBookingService(bookingRepo, spaceRepo, historyRepo, eventsChan)
 	spaceService := services.NewSpaceService(spaceRepo)
 	favoritesService := services.NewFavoritesService(favoritesRepo)
 
 	authHandler := handlers.NewAuthHandler(authService)
 	bookingHandler := handlers.NewBookingHandler(bookingService)
 	spaceHandler := handlers.NewSpaceHandler(spaceService)
+	bookingHistoryHandler := handlers.NewBookingHistoryHandler(bookingService)
 	favoritesHandler := handlers.NewFavoritesHandler(favoritesService)
 
 	gin.SetMode(cfg.Server.Mode)
