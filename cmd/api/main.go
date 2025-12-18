@@ -39,18 +39,15 @@ func main() {
 	userRepo := repository.NewUserRepository(database)
 	bookingRepo := repository.NewBookingRepository(database)
 	spaceRepo := repository.NewSpaceRepository(database)
-	favoritesRepo := repository.NewFavoritesRepository(database)
 	eventsChan := make(chan domain.BookingEvent, 100)
 
 	authService := services.NewAuthService(userRepo, jwtManager)
 	bookingService := services.NewBookingService(bookingRepo, spaceRepo, eventsChan)
 	spaceService := services.NewSpaceService(spaceRepo)
-	favoritesService := services.NewFavoritesService(favoritesRepo)
 
 	authHandler := handlers.NewAuthHandler(authService)
 	bookingHandler := handlers.NewBookingHandler(bookingService)
 	spaceHandler := handlers.NewSpaceHandler(spaceService)
-	favoritesHandler := handlers.NewFavoritesHandler(favoritesService)
 
 	gin.SetMode(cfg.Server.Mode)
 	r := gin.New()
@@ -70,17 +67,6 @@ func main() {
 	{
 		spacesGroup.GET("", spaceHandler.ListSpaces)
 	}
-
-	tenantSpaces := api.Group("/spaces",
-		middleware.AuthMiddleware(jwtManager),
-		middleware.RoleMiddleware(domain.RoleTenant),
-	)
-	{
-		tenantSpaces.POST("/:id/favorite", favoritesHandler.AddFavorite)
-		tenantSpaces.DELETE("/:id/favorite", favoritesHandler.RemoveFavorite)
-		tenantSpaces.GET("/favorites", favoritesHandler.ListFavorites)
-	}
-
 	ownerSpaces := api.Group("/spaces", middleware.AuthMiddleware(jwtManager), middleware.OwnerOnlyMiddleware())
 	{
 		ownerSpaces.POST("", spaceHandler.CreateSpace)
@@ -91,6 +77,8 @@ func main() {
 		bookingsGroup.POST("", middleware.RoleMiddleware(domain.RoleTenant), bookingHandler.CreateBooking)
 		bookingsGroup.GET("/my", middleware.RoleMiddleware(domain.RoleTenant), bookingHandler.MyBookings)
 		bookingsGroup.PATCH("/:id/cancel", middleware.RoleMiddleware(domain.RoleTenant), bookingHandler.CancelBooking)
+		// НОВЫЙ ЭНДПОИНТ: История бронирования
+		bookingsGroup.GET("/:id/history", bookingHandler.GetBookingHistory)
 	}
 
 	ownerBookings := api.Group("/owner/bookings",

@@ -84,7 +84,7 @@ func (s *BookingService) ListOwnerBookings(ownerID int) ([]domain.Booking, error
 	return s.bookings.ListByOwner(ownerID)
 }
 
-func (s *BookingService) CancelBooking(id, tenantID int) error {
+func (s *BookingService) CancelBooking(id, tenantID int, reason *string) error {
 	b, err := s.bookings.GetByID(id)
 	if err != nil {
 		return err
@@ -100,7 +100,7 @@ func (s *BookingService) CancelBooking(id, tenantID int) error {
 		return ErrWrongStatus
 	}
 
-	if err := s.bookings.UpdateStatus(id, domain.BookingStatusCancelled); err != nil {
+	if err := s.bookings.UpdateStatus(id, domain.BookingStatusCancelled, tenantID, reason); err != nil {
 		return err
 	}
 	if s.events != nil {
@@ -116,7 +116,7 @@ func (s *BookingService) CancelBooking(id, tenantID int) error {
 	return nil
 }
 
-func (s *BookingService) ApproveBooking(id int, ownerID int) error {
+func (s *BookingService) ApproveBooking(id int, ownerID int, reason *string) error {
 	b, err := s.bookings.GetByID(id)
 	if err != nil {
 		return err
@@ -143,7 +143,7 @@ func (s *BookingService) ApproveBooking(id int, ownerID int) error {
 		return ErrOverlappingBooking
 	}
 
-	if err := s.bookings.UpdateStatus(id, domain.BookingStatusApproved); err != nil {
+	if err := s.bookings.UpdateStatus(id, domain.BookingStatusApproved, ownerID, reason); err != nil {
 		return err
 	}
 	if s.events != nil {
@@ -159,7 +159,7 @@ func (s *BookingService) ApproveBooking(id int, ownerID int) error {
 	return nil
 }
 
-func (s *BookingService) RejectBooking(id int, ownerID int) error {
+func (s *BookingService) RejectBooking(id int, ownerID int, reason *string) error {
 	b, err := s.bookings.GetByID(id)
 	if err != nil {
 		return err
@@ -178,7 +178,7 @@ func (s *BookingService) RejectBooking(id int, ownerID int) error {
 		return ErrWrongStatus
 	}
 
-	if err := s.bookings.UpdateStatus(id, domain.BookingStatusRejected); err != nil {
+	if err := s.bookings.UpdateStatus(id, domain.BookingStatusRejected, ownerID, reason); err != nil {
 		return err
 	}
 	if s.events != nil {
@@ -192,4 +192,31 @@ func (s *BookingService) RejectBooking(id int, ownerID int) error {
 	}
 
 	return nil
+}
+
+// GetBookingHistory возвращает историю статусов бронирования
+func (s *BookingService) GetBookingHistory(bookingID, userID int, userRole domain.UserRole) ([]domain.BookingStatusHistory, error) {
+	// Проверяем права доступа
+	booking, err := s.bookings.GetByID(bookingID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Арендатор может видеть только свои брони
+	if userRole == domain.RoleTenant && booking.TenantID != userID {
+		return nil, ErrForbidden
+	}
+
+	// Владелец может видеть только брони своих пространств
+	if userRole == domain.RoleOwner {
+		space, err := s.spaces.GetByID(booking.SpaceID)
+		if err != nil {
+			return nil, err
+		}
+		if space.OwnerID != userID {
+			return nil, ErrForbidden
+		}
+	}
+
+	return s.bookings.GetStatusHistory(bookingID)
 }

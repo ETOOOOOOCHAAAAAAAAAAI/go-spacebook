@@ -13,11 +13,16 @@ var (
 )
 
 type BookingRepository struct {
-	db *sql.DB
+	db          *sql.DB
+	historyRepo *BookingStatusHistoryRepository
 }
 
 func NewBookingRepository(db *sql.DB) *BookingRepository {
-	return &BookingRepository{db: db}
+	historyRepo := NewBookingStatusHistoryRepository(db)
+	return &BookingRepository{
+		db:          db,
+		historyRepo: historyRepo,
+	}
 }
 
 func (r *BookingRepository) Create(b *domain.Booking) error {
@@ -27,7 +32,17 @@ func (r *BookingRepository) Create(b *domain.Booking) error {
 		RETURNING id, status, created_at, updated_at;
 	`
 
-	err := r.db.QueryRow(
+	tx, err := r.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			tx.Rollback()
+		}
+	}()
+
+	err = tx.QueryRow(
 		query,
 		b.SpaceID,
 		b.TenantID,
@@ -36,14 +51,24 @@ func (r *BookingRepository) Create(b *domain.Booking) error {
 		b.Status,
 	).Scan(&b.ID, &b.Status, &b.CreatedAt, &b.UpdatedAt)
 
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Записываем начальный статус через транзакцию
+	tempHistoryRepo := NewBookingStatusHistoryRepository(tx)
+	if err := tempHistoryRepo.RecordInitialStatus(b.ID, b.Status, b.TenantID); err != nil {
+		return err
+	}
+
+	return tx.Commit()
 }
 
 func (r *BookingRepository) GetByID(id int) (*domain.Booking, error) {
 	const q = `
-        SELECT id, space_id, tenant_id, date_from, date_to, status, created_at, updated_at
-        FROM bookings
-        WHERE id = $1`
+		SELECT id, space_id, tenant_id, date_from, date_to, status, created_at, updated_at
+		FROM bookings
+		WHERE id = $1`
 
 	b := &domain.Booking{}
 	err := r.db.QueryRow(q, id).Scan(
@@ -62,10 +87,10 @@ func (r *BookingRepository) GetByID(id int) (*domain.Booking, error) {
 
 func (r *BookingRepository) ListByTenant(tenantID int) ([]domain.Booking, error) {
 	const q = `
-        SELECT id, space_id, tenant_id, date_from, date_to, status, created_at, updated_at
-        FROM bookings
-        WHERE tenant_id = $1
-        ORDER BY date_from DESC, id DESC`
+		SELECT id, space_id, tenant_id, date_from, date_to, status, created_at, updated_at
+		FROM bookings
+		WHERE tenant_id = $1
+		ORDER BY date_from DESC, id DESC`
 
 	rows, err := r.db.Query(q, tenantID)
 	if err != nil {
@@ -90,12 +115,12 @@ func (r *BookingRepository) ListByTenant(tenantID int) ([]domain.Booking, error)
 
 func (r *BookingRepository) ListByOwner(ownerID int) ([]domain.Booking, error) {
 	const q = `
-        SELECT b.id, b.space_id, b.tenant_id, b.date_from, b.date_to,
-               b.status, b.created_at, b.updated_at
-        FROM bookings b
-        JOIN spaces s ON s.id = b.space_id
-        WHERE s.owner_id = $1
-        ORDER BY b.date_from DESC, b.id DESC`
+		SELECT b.id, b.space_id, b.tenant_id, b.date_from, b.date_to,
+			   b.status, b.created_at, b.updated_at
+		FROM bookings b
+		JOIN spaces s ON s.id = b.space_id
+		WHERE s.owner_id = $1
+		ORDER BY b.date_from DESC, b.id DESC`
 
 	rows, err := r.db.Query(q, ownerID)
 	if err != nil {
@@ -118,24 +143,64 @@ func (r *BookingRepository) ListByOwner(ownerID int) ([]domain.Booking, error) {
 	return res, rows.Err()
 }
 
-func (r *BookingRepository) UpdateStatus(id int, status domain.BookingStatus) error {
-	const q = `
-        UPDATE bookings
-        SET status = $1, updated_at = NOW()
-        WHERE id = $2`
-
-	res, err := r.db.Exec(q, status, id)
+func (r *BookingRepository) UpdateStatus(id int, status domain.BookingStatus, changedBy int, reason *string) error {
+	// Получаем текущий статус
+	var oldStatus domain.BookingStatus
+	const getStatusQuery = `SELECT status FROM bookings WHERE id = $1`
+	err := r.db.QueryRow(getStatusQuery, id).Scan(&oldStatus)
 	if err != nil {
 		return err
 	}
+
+	// Начинаем транзакцию
+	tx, err := r.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			tx.Rollback()
+		}
+	}()
+
+	// Обновляем статус в основной таблице
+	const updateQuery = `
+		UPDATE bookings
+		SET status = $1, updated_at = NOW()
+		WHERE id = $2
+	`
+
+	res, err := tx.Exec(updateQuery, status, id)
+	if err != nil {
+		return err
+	}
+
 	n, err := res.RowsAffected()
 	if err != nil {
 		return err
 	}
+
 	if n == 0 {
 		return ErrBookingNotFound
 	}
-	return nil
+
+	// Записываем в историю через транзакцию
+	history := &domain.BookingStatusHistory{
+		BookingID: id,
+		OldStatus: &oldStatus,
+		NewStatus: status,
+		ChangedBy: changedBy,
+		ChangedAt: time.Now(),
+		Reason:    reason,
+	}
+
+	// Используем временный репозиторий для транзакции
+	tempHistoryRepo := NewBookingStatusHistoryRepository(tx)
+	if err := tempHistoryRepo.Create(history); err != nil {
+		return err
+	}
+
+	return tx.Commit()
 }
 
 func (r *BookingRepository) HasApprovedOverlap(
@@ -144,15 +209,15 @@ func (r *BookingRepository) HasApprovedOverlap(
 	excludeID *int,
 ) (bool, error) {
 	query := `
-        SELECT EXISTS (
-            SELECT 1
-            FROM bookings
-            WHERE space_id = $1
-              AND status = 'approved'
-              -- нет пересечения = (date_to <= from) OR (date_from >= to)
-              -- нам нужны ИМЕННО пересекающиеся, поэтому NOT (...)
-              AND NOT (date_to <= $2 OR date_from >= $3)
-    `
+		SELECT EXISTS (
+			SELECT 1
+			FROM bookings
+			WHERE space_id = $1
+			  AND status = 'approved'
+			  -- нет пересечения = (date_to <= from) OR (date_from >= to)
+			  -- нам нужны ИМЕННО пересекающиеся, поэтому NOT (...)
+			  AND NOT (date_to <= $2 OR date_from >= $3)
+	`
 	args := []any{spaceID, from, to}
 
 	if excludeID != nil {
@@ -167,4 +232,9 @@ func (r *BookingRepository) HasApprovedOverlap(
 		return false, err
 	}
 	return exists, nil
+}
+
+// GetStatusHistory возвращает историю статусов бронирования
+func (r *BookingRepository) GetStatusHistory(bookingID int) ([]domain.BookingStatusHistory, error) {
+	return r.historyRepo.GetByBookingID(bookingID)
 }
