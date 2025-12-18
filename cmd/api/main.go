@@ -39,10 +39,12 @@ func main() {
 	userRepo := repository.NewUserRepository(database)
 	bookingRepo := repository.NewBookingRepository(database)
 	spaceRepo := repository.NewSpaceRepository(database)
+	historyRepo := repository.NewBookingHistoryRepository(database)
+
 	eventsChan := make(chan domain.BookingEvent, 100)
 
 	authService := services.NewAuthService(userRepo, jwtManager)
-	bookingService := services.NewBookingService(bookingRepo, spaceRepo, eventsChan)
+	bookingService := services.NewBookingService(bookingRepo, spaceRepo, historyRepo, eventsChan)
 	spaceService := services.NewSpaceService(spaceRepo)
 
 	authHandler := handlers.NewAuthHandler(authService)
@@ -77,7 +79,6 @@ func main() {
 		bookingsGroup.POST("", middleware.RoleMiddleware(domain.RoleTenant), bookingHandler.CreateBooking)
 		bookingsGroup.GET("/my", middleware.RoleMiddleware(domain.RoleTenant), bookingHandler.MyBookings)
 		bookingsGroup.PATCH("/:id/cancel", middleware.RoleMiddleware(domain.RoleTenant), bookingHandler.CancelBooking)
-		// НОВЫЙ ЭНДПОИНТ: История бронирования
 		bookingsGroup.GET("/:id/history", bookingHandler.GetBookingHistory)
 	}
 

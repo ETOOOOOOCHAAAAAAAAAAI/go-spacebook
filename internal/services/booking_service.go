@@ -19,12 +19,14 @@ type BookingService struct {
 	bookings *repository.BookingRepository
 	spaces   *repository.SpaceRepository
 	events   chan<- domain.BookingEvent
+	history  *repository.BookingHistoryRepository
 }
 
-func NewBookingService(bookings *repository.BookingRepository, spaces *repository.SpaceRepository, events chan<- domain.BookingEvent) *BookingService {
+func NewBookingService(bookings *repository.BookingRepository, spaces *repository.SpaceRepository, history *repository.BookingHistoryRepository, events chan<- domain.BookingEvent) *BookingService {
 	return &BookingService{
 		bookings: bookings,
 		spaces:   spaces,
+		history:  history,
 		events:   events,
 	}
 }
