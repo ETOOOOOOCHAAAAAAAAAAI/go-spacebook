@@ -16,7 +16,7 @@ Make sure you have:
 
 Check Docker:
 
-```bash
+bash
 docker --version
 docker compose version
 2. Clone the repository
