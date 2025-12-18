@@ -149,8 +149,6 @@ func (r *BookingRepository) HasApprovedOverlap(
             FROM bookings
             WHERE space_id = $1
               AND status = 'approved'
-              -- нет пересечения = (date_to <= from) OR (date_from >= to)
-              -- нам нужны ИМЕННО пересекающиеся, поэтому NOT (...)
               AND NOT (date_to <= $2 OR date_from >= $3)
     `
 	args := []any{spaceID, from, to}
