@@ -1,40 +1,49 @@
 package handlers
 
 import (
-	"SpaceBookProject/internal/domain"
-	"SpaceBookProject/internal/services"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
+
+	"SpaceBookProject/internal/domain"
+	"SpaceBookProject/internal/services"
 
 	"github.com/gin-gonic/gin"
 )
 
 type BookingHandler struct {
-	svc *services.BookingService
+	bookingService *services.BookingService
 }
 
-func NewBookingHandler(svc *services.BookingService) *BookingHandler {
-	return &BookingHandler{svc: svc}
+func NewBookingHandler(bookingService *services.BookingService) *BookingHandler {
+	return &BookingHandler{
+		bookingService: bookingService,
+	}
 }
 
 func (h *BookingHandler) CreateBooking(c *gin.Context) {
 	var req domain.CreateBookingRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body: " + err.Error()})
+		c.JSON(http.StatusBadRequest, ErrorResponse{
+			Error: "Invalid request format: " + err.Error(),
+		})
 		return
 	}
 
-	uidVal, ok := c.Get("userID")
-	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+	userID, exists := c.Get("userID")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, ErrorResponse{
+			Error: "User not authenticated",
+		})
 		return
 	}
-	tenantID := uidVal.(int)
 
-	booking, err := h.svc.CreateBooking(tenantID, &req)
+	booking, err := h.bookingService.CreateBooking(userID.(int), &req)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, ErrorResponse{
+			Error: "Failed to create booking: " + err.Error(),
+		})
 		return
 	}
 
@@ -42,138 +51,237 @@ func (h *BookingHandler) CreateBooking(c *gin.Context) {
 }
 
 func (h *BookingHandler) MyBookings(c *gin.Context) {
-	uidVal, ok := c.Get("userID")
-	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+	userID, exists := c.Get("userID")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, ErrorResponse{
+			Error: "User not authenticated",
+		})
 		return
 	}
-	tenantID := uidVal.(int)
 
-	items, err := h.svc.ListMyBookings(tenantID)
+	bookings, err := h.bookingService.ListMyBookings(userID.(int))
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load bookings"})
+		c.JSON(http.StatusInternalServerError, ErrorResponse{
+			Error: "Failed to fetch bookings",
+		})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"items": items})
+	c.JSON(http.StatusOK, bookings)
 }
 
 func (h *BookingHandler) OwnerBookings(c *gin.Context) {
-	uidVal, ok := c.Get("userID")
-	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+	ownerID, exists := c.Get("userID")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, ErrorResponse{
+			Error: "User not authenticated",
+		})
 		return
 	}
-	ownerID := uidVal.(int)
 
-	items, err := h.svc.ListOwnerBookings(ownerID)
+	bookings, err := h.bookingService.ListOwnerBookings(ownerID.(int))
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load owner bookings"})
+		c.JSON(http.StatusInternalServerError, ErrorResponse{
+			Error: "Failed to fetch bookings",
+		})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"items": items})
+	c.JSON(http.StatusOK, bookings)
 }
 
 func (h *BookingHandler) CancelBooking(c *gin.Context) {
-	idStr := c.Param("id")
-	id, err := strconv.Atoi(idStr)
+	bookingID, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid booking id"})
+		c.JSON(http.StatusBadRequest, ErrorResponse{
+			Error: "Invalid booking ID",
+		})
 		return
 	}
 
-	uidVal, ok := c.Get("userID")
-	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+	userID, exists := c.Get("userID")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, ErrorResponse{
+			Error: "User not authenticated",
+		})
 		return
 	}
-	tenantID := uidVal.(int)
 
-	err = h.svc.CancelBooking(id, tenantID)
-	if err != nil {
-		switch {
-		case errors.Is(err, services.ErrForbidden):
-			c.JSON(http.StatusForbidden, gin.H{"error": "you can cancel only your own booking"})
-		case errors.Is(err, services.ErrAlreadyStarted):
-			c.JSON(http.StatusBadRequest, gin.H{"error": "booking already started"})
-		case errors.Is(err, services.ErrWrongStatus):
-			c.JSON(http.StatusBadRequest, gin.H{"error": "booking cannot be cancelled in this status"})
+	var req domain.UpdateBookingStatusRequest
+	if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+		// Причина опциональна, поэтому не требуем её
+		req.Reason = nil
+	}
+
+	if err := h.bookingService.CancelBooking(bookingID, userID.(int), req.Reason); err != nil {
+		switch err {
+		case services.ErrForbidden:
+			c.JSON(http.StatusForbidden, ErrorResponse{
+				Error: "You don't have permission to cancel this booking",
+			})
+		case services.ErrAlreadyStarted:
+			c.JSON(http.StatusBadRequest, ErrorResponse{
+				Error: "Cannot cancel booking that has already started",
+			})
+		case services.ErrWrongStatus:
+			c.JSON(http.StatusBadRequest, ErrorResponse{
+				Error: "Cannot cancel booking with current status",
+			})
 		default:
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to cancel booking"})
+			c.JSON(http.StatusInternalServerError, ErrorResponse{
+				Error: "Failed to cancel booking: " + err.Error(),
+			})
 		}
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"message": "booking cancelled",
+	c.JSON(http.StatusOK, MessageResponse{
+		Message: "Booking cancelled successfully",
 	})
 }
 
 func (h *BookingHandler) ApproveBooking(c *gin.Context) {
-	idStr := c.Param("id")
-	id, err := strconv.Atoi(idStr)
+	bookingID, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid booking id"})
+		c.JSON(http.StatusBadRequest, ErrorResponse{
+			Error: "Invalid booking ID",
+		})
 		return
 	}
 
-	uidVal, ok := c.Get("userID")
-	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+	ownerID, exists := c.Get("userID")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, ErrorResponse{
+			Error: "User not authenticated",
+		})
 		return
 	}
-	ownerID := uidVal.(int)
 
-	err = h.svc.ApproveBooking(id, ownerID)
-	if err != nil {
-		switch {
-		case errors.Is(err, services.ErrForbidden):
-			c.JSON(http.StatusForbidden, gin.H{"error": "this booking does not belong to your spaces"})
-		case errors.Is(err, services.ErrWrongStatus):
-			c.JSON(http.StatusBadRequest, gin.H{"error": "only pending bookings can be approved"})
-		case errors.Is(err, services.ErrOverlappingBooking):
-			c.JSON(http.StatusConflict, gin.H{"error": "booking overlaps with existing approved booking"})
+	var req domain.UpdateBookingStatusRequest
+	if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+		// Причина опциональна
+		req.Reason = nil
+	}
+
+	if err := h.bookingService.ApproveBooking(bookingID, ownerID.(int), req.Reason); err != nil {
+		switch err {
+		case services.ErrForbidden:
+			c.JSON(http.StatusForbidden, ErrorResponse{
+				Error: "You don't have permission to approve this booking",
+			})
+		case services.ErrWrongStatus:
+			c.JSON(http.StatusBadRequest, ErrorResponse{
+				Error: "Cannot approve booking with current status",
+			})
+		case services.ErrOverlappingBooking:
+			c.JSON(http.StatusConflict, ErrorResponse{
+				Error: "Cannot approve booking due to overlapping with another approved booking",
+			})
 		default:
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to approve booking"})
+			c.JSON(http.StatusInternalServerError, ErrorResponse{
+				Error: "Failed to approve booking: " + err.Error(),
+			})
 		}
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"message": "booking approved",
+	c.JSON(http.StatusOK, MessageResponse{
+		Message: "Booking approved successfully",
 	})
 }
 
 func (h *BookingHandler) RejectBooking(c *gin.Context) {
-	idStr := c.Param("id")
-	id, err := strconv.Atoi(idStr)
+	bookingID, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid booking id"})
+		c.JSON(http.StatusBadRequest, ErrorResponse{
+			Error: "Invalid booking ID",
+		})
 		return
 	}
 
-	uidVal, ok := c.Get("userID")
-	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+	ownerID, exists := c.Get("userID")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, ErrorResponse{
+			Error: "User not authenticated",
+		})
 		return
 	}
-	ownerID := uidVal.(int)
 
-	err = h.svc.RejectBooking(id, ownerID)
-	if err != nil {
-		switch {
-		case errors.Is(err, services.ErrForbidden):
-			c.JSON(http.StatusForbidden, gin.H{"error": "this booking does not belong to your spaces"})
-		case errors.Is(err, services.ErrWrongStatus):
-			c.JSON(http.StatusBadRequest, gin.H{"error": "only pending bookings can be rejected"})
+	var req domain.UpdateBookingStatusRequest
+	if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+		// Причина опциональна
+		req.Reason = nil
+	}
+
+	if err := h.bookingService.RejectBooking(bookingID, ownerID.(int), req.Reason); err != nil {
+		switch err {
+		case services.ErrForbidden:
+			c.JSON(http.StatusForbidden, ErrorResponse{
+				Error: "You don't have permission to reject this booking",
+			})
+		case services.ErrWrongStatus:
+			c.JSON(http.StatusBadRequest, ErrorResponse{
+				Error: "Cannot reject booking with current status",
+			})
 		default:
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to reject booking"})
+			c.JSON(http.StatusInternalServerError, ErrorResponse{
+				Error: "Failed to reject booking: " + err.Error(),
+			})
 		}
 		return
 	}
 
+	c.JSON(http.StatusOK, MessageResponse{
+		Message: "Booking rejected successfully",
+	})
+}
+
+func (h *BookingHandler) GetBookingHistory(c *gin.Context) {
+	bookingID, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, ErrorResponse{
+			Error: "Invalid booking ID",
+		})
+		return
+	}
+
+	userIDRaw, exists := c.Get("userID")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, ErrorResponse{
+			Error: "User not authenticated",
+		})
+		return
+	}
+
+	roleRaw, exists := c.Get("role")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, ErrorResponse{
+			Error: "User role not found",
+		})
+		return
+	}
+
+	userID := userIDRaw.(int)
+	userRole := domain.UserRole(roleRaw.(string))
+
+	history, err := h.bookingService.GetBookingHistory(bookingID, userID, userRole)
+	if err != nil {
+		if err == services.ErrForbidden {
+			c.JSON(http.StatusForbidden, ErrorResponse{
+				Error: "You don't have access to this booking",
+			})
+			return
+		}
+
+		c.JSON(http.StatusInternalServerError, ErrorResponse{
+			Error: "Failed to get booking history",
+		})
+		return
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"message": "booking rejected",
+		"booking_id": bookingID,
+		"history":    history,
+		"count":      len(history),
 	})
 }

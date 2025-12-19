@@ -42,7 +42,6 @@ type APIConfig struct {
 
 func LoadConfig() (*Config, error) {
 	if err := godotenv.Load(); err != nil {
-		// Не критично если файла нет - используем переменные окружения
 		fmt.Println("No .env file found, using environment variables")
 	}
 
