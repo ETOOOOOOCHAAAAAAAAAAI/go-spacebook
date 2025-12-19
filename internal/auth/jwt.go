@@ -52,7 +52,7 @@ func (j *JWTManager) GenerateAccessToken(userID int, email, role string) (string
 
 func (j *JWTManager) GenerateRefreshToken(userID int) (string, error) {
 	claims := jwt.RegisteredClaims{
-		Subject:   fmt.Sprintf("%d", userID), // Правильное преобразование int в string
+		Subject:   fmt.Sprintf("%d", userID),
 		ExpiresAt: jwt.NewNumericDate(time.Now().Add(j.refreshTokenTTL)),
 		IssuedAt:  jwt.NewNumericDate(time.Now()),
 	}
